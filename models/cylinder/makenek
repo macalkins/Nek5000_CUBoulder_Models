@@ -1,0 +1,16 @@
+#!/bin/bash
+# Build the cylinder case (see VISTA.md for the full Vista/TACC workflow).
+: ${NEK_SOURCE_ROOT:?"Set NEK_SOURCE_ROOT to your Nek5000 directory, e.g. \$WORK/Nek5000"}
+CASE=rrbc_cylinder
+
+# IMPORTANT (Vista): the nvidia HPC-SDK module pre-exports FC=nvfortran and
+# CC=nvc. Nek relies on FC/CC being the MPI *wrappers* (it adds no MPI include
+# paths itself), so we force them here -- otherwise the build fails with
+# "cannot open source file mpi.h" / "Unable to open include file mpif.h".
+export FC=mpif90
+export CC=mpicc
+export FFLAGS="${FFLAGS:--O2}"
+export CFLAGS="${CFLAGS:--O2}"
+
+${NEK_SOURCE_ROOT}/bin/nekconfig $CASE
+make -j4

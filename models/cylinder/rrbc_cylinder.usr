@@ -1,0 +1,399 @@
+c-----------------------------------------------------------------------
+c  nek5000 user-file template
+c
+c  user specified routines:
+c     - uservp  : variable properties
+c     - userf   : local acceleration term for fluid
+c     - userq   : local source term for scalars
+c     - userbc  : boundary conditions
+c     - useric  : initial conditions
+c     - userchk : general purpose routine for checking errors etc.
+c     - userqtl : thermal divergence for lowMach number flows 
+c     - usrdat  : modify element vertices 
+c     - usrdat2 : modify mesh coordinates
+c     - usrdat3 : general purpose routine for initialization
+c     
+c-----------------------------------------------------------------------
+      subroutine uservp(ix,iy,iz,eg) ! set variable properties
+
+c      implicit none
+
+      integer ix,iy,iz,eg
+     
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      integer e
+c     e = gllel(eg)
+
+      udiff  = 0.0
+      utrans = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userf(ix,iy,iz,eg) ! set acceleration term
+c
+c     Note: this is an acceleration term, NOT a force!
+c     Thus, ffx will subsequently be multiplied by rho(x,t).
+c
+c      implicit none
+
+      integer ix,iy,iz,eg
+
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      integer e
+c     e = gllel(eg)
+
+      real Rat,Ra,Ek,Prandtl
+
+      Rat = uparam(1)
+      Ek = uparam(2)
+      Ra = Rat*(Ek)**(-4.0/3.0)
+
+      Prandtl = 1/param(8)
+
+      !ffx = 0.0
+      !ffy = 0.0
+
+      ffx = uy/Ek
+      ffy = -ux/Ek
+      ffz = (Ra/Prandtl)*temp
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userq(ix,iy,iz,eg) ! set source term
+
+c      implicit none
+
+      integer ix,iy,iz,eg
+
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      integer e
+c     e = gllel(eg)
+
+      qvol   = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userbc(ix,iy,iz,iside,eg) ! set up boundary conditions
+c
+c     NOTE ::: This subroutine MAY NOT be called by every process
+c
+c      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      
+      integer ix,iy,iz,iside,eg,iel
+
+      iel = gllel(eg) ! MUST define iel from global element index eg 
+
+      ! Default values
+      ux=0.0
+      uy=0.0
+      uz=0.0
+      temp=0.0
+
+      if (ifield .eq. 2) then ! Temperature field
+         id = boundaryID(iside,iel)
+         if (id .eq. 2) then
+            temp = 1.0  ! Hot bottom plate
+         elseif (id .eq. 3) then
+            temp = 0.0  ! Cold top plate
+         endif
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine useric(ix,iy,iz,eg) ! set up initial conditions
+
+c      implicit none
+
+      integer ix,iy,iz,eg
+
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      ux   = 0.0
+      uy   = 0.0
+      uz   = 0.0
+
+c     Initial condition for temperature = conductive profile (1-z) + a seed.
+c     uparam(4) selects the seed:  0 = random noise;  1 = Cartesian hexagonal
+c     tessellation at the critical wavenumber a_c = k_c*H = 1.3048*Ek^{-1/3},
+c     with sin(pi*z) vertical structure so it vanishes at both fixed-T plates.
+      if (uparam(4) .gt. 0.5) then
+         pi  = 4.0*atan(1.0)
+         ac  = 1.3048*(uparam(2))**(-1.0/3.0)
+         s3  = sqrt(3.0)
+         hexpat =        cos(ac*x)
+     &          + cos(ac*(-0.5*x + 0.5*s3*y))
+     &          + cos(ac*(-0.5*x - 0.5*s3*y))
+         temp = (1.0 - z) + 1.0e-2*sin(pi*z)*hexpat
+      else
+         temp = (1.0 - z) + 1.0e-4*rand()
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userchk()
+
+c      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+
+c      nxyz = nx1*ny1*nz1
+c      ! for coloring to check BCs only 
+c      do iel=1,nelv
+c         id_val = 0
+c         do ifac=1,2*ndim
+c            ! Accessing the boundary ID array
+c            if (boundaryID(ifac,iel) .gt. 0) then
+c               id_val = boundaryID(ifac,iel)
+c            endif
+c         enddo
+c
+c         ! If this element touches a boundary, color the whole element
+c         if (id_val .gt. 0) then
+c            do i=1,nxyz
+c               ! Use the 5D reference for the temperature array
+c               t(i,1,1,iel,1) = real(id_val)
+c            enddo
+c         endif
+c      enddo
+    
+      call getReynolds()
+
+      call getNusselt()
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userqtl ! Set thermal divergence
+
+      call userqtl_scig 
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat()   ! This routine to modify element vertices
+
+c      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat2()  ! This routine to modify mesh coordinates
+
+c      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer id_face,ierr1,ierr2
+      integer ntot, i
+      real xx,yy,zz,argx,argy
+
+      do iel=1,nelv
+      do ifac=1,2*ndim
+         id_face = boundaryID(ifac,iel)
+         if (id_face.eq.1) cbc(ifac,iel,1) = 'W  ' ! (Side)
+         if (id_face.eq.2) cbc(ifac,iel,1) = 'W  ' ! (Bottom)
+         if (id_face.eq.3) cbc(ifac,iel,1) = 'W  ' ! (Top)
+      enddo
+      enddo
+
+      do iel=1,nelt
+         do ifc=1,2*ndim
+            id_face = boundaryID(ifc,iel)
+            if (id_face .eq. 1) then
+               cbc(ifc,iel,2) = 'I  '  ! Flux/Insulated sidewall
+            elseif (id_face .eq. 2 .or. id_face .eq. 3) then
+               cbc(ifc,iel,2) = 't  '  ! Dirichlet Temperature caps
+               !cbc(ifc,iel,2) = 'I  '  
+            endif
+         enddo
+      enddo
+
+c      param(59) = 1.   !  All elements deformed
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3()
+
+c      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      real startTime
+      integer callCounter
+      integer csvCounter,io
+      common /counters/ callCounter,csvCounter,startTime
+      logical exists
+
+      callCounter = 0
+      csvCounter = 0
+
+c     IO Files
+      inquire(file="reynolds.csv",exist = exists)
+
+      if(nio.eq.0) then
+          if (exists) then
+              open(newunit = io, file = "reynolds.csv",
+     &             status="replace", action="write")
+          else
+              open(newunit = io, file = "reynolds.csv",
+     &             status="new", action="write")
+          endif
+
+          write(io,*) "time, Re"
+          close(io)
+      endif
+
+      inquire(file="nusselt.csv",exist = exists)
+
+      if(nio.eq.0) then
+          if (exists) then
+              open(newunit = io, file = "nusselt.csv",
+     &             status="replace", action="write")
+          else
+              open(newunit = io, file = "nusselt.csv",
+     &             status="new", action="write")
+          endif
+
+          write(io,*) "time, nusselt_bot, nusselt_top"
+          close(io)
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine getReynolds()
+      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      real uvel2,vvel2,wvel2,re
+      integer n,io,n2
+      real glsc3
+
+      n = lx1*ly1*lz1*nelv
+      n2 = lx2*ly2*lz2*nelv
+
+      uvel2 = glsc3(vx,vx,bm1,n)
+      vvel2 = glsc3(vy,vy,bm1,n)
+      wvel2 = glsc3(vz,vz,bm1,n)
+      re = sqrt( (uvel2 + vvel2 + wvel2)/volvm1 )/param(2)
+      
+      if(nio.eq.0) then
+
+         open(newunit=io,file="reynolds.csv",position="append",
+     & status="old",action="write")
+
+         write(io,*) time,",",re
+         close(io)
+
+      endif
+
+      return
+      end
+c------------------------------------------------------------------------
+      subroutine getNusselt()
+      implicit none
+      include 'SIZE'
+      include 'TOTAL'
+
+      real rho,polar,phi
+      real dTdx(lx1,ly1,lz1,lelt,1),dTdy(lx1,ly1,lz1,lelt,1)
+      real dTdz(lx1,ly1,lz1,lelt,1)
+
+      real dTdraid(lx1,ly1,lz1,lelt,1)
+      real pvariable
+      real polarm1(lx1,ly1,lz1,nelt)
+      real phim1(lx1,ly1,lz1,nelt)
+      real dphi,dS,tarea_in,tarea_out,gt_int
+      real gt_int_out,nusselt_out
+      real Acond,Tcond,ro,nusselt,glsum,ri
+      real area_bot,area_top
+      real yvalue,zvalue
+
+      integer i,e,io,iside
+      character*3 side
+      integer ntot
+      ntot = lx1*ly1*lz1*lelt
+
+
+      call gradm1(dTdx,dTdy,dTdz,t)
+
+
+c Do surface integral under if statement looking at bcid
+c     only faces on surface
+
+      tarea_in = 0
+      area_bot = 0
+      tarea_out = 0
+      area_top = 0
+c     temperature Dirichlet faces ('t  ') lie on the two plates; the domain is
+c     z in [0,1], so split at the midplane z=0.5 (bottom z=0, top z=1).
+      do e=1,nelt
+        do iside=1,6
+          side = cbc(iside,e,2)
+           zvalue = zm1(1,1,1,e)
+           if (side.eq.'t  ') then
+             call surface_int(dphi,dS,dTdz, e ,iside)
+             if (zvalue.lt. 0.5) then     ! bottom plate (z=0)
+               tarea_in = tarea_in + dphi
+               area_bot = area_bot + dS
+             else                          ! top plate (z=1)
+               tarea_out = tarea_out + dphi
+               area_top = area_top + dS
+             endif
+           endif
+        enddo
+      enddo
+      nusselt     = -glsum(tarea_in,1)/glsum(area_bot,1)
+      nusselt_out = -glsum(tarea_out,1)/glsum(area_top,1)
+c      gt_int_out =  glsum(tarea_out,1)/(4*PI*ro**2)
+c      nusselt = gt_int/Tcond
+c      nusselt_out = gt_int_out/(TCond*(ri**2.0/ro**2.0))
+      if(nio.eq.0) then
+          open(newunit=io,file="nusselt.csv",
+     &        position="append",status="old",action="write")
+
+             write(io,'(1p,e17.9,",",e17.9,",",e17.9)')
+     &             time,nusselt,nusselt_out
+             close(io)
+
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+c  Stub: bcrobin_mhd is called from the patched induct.f but unused in
+c  hydro runs (required to link on this Nek5000 build).
+      subroutine bcrobin_mhd(h2)
+      return
+      end
+c

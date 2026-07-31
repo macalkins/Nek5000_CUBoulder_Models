@@ -1,0 +1,1314 @@
+c-----------------------------------------------------------------------
+c  Hydro rotating convection in a spherical shell
+c  Ek=1e-6, Ra=1e9, Pr=1, eta=0.35
+c  uparam(1)=Ek, uparam(2)=Ra, uparam(3)=eta, uparam(4)=diag freq
+c-----------------------------------------------------------------------
+      subroutine uservp(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      udiff  = 0.0
+      utrans = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userf(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      real Ra, Ek, eta, rri, rro
+      real rad, rhx, rhy, rhz, buoy
+
+      Ra  = uparam(2)
+      Ek  = uparam(1)
+      eta = uparam(3)
+      rri = eta / (1.0 - eta)
+      rro = 1.0 / (1.0 - eta)
+
+      rad = sqrt(x**2 + y**2 + z**2)
+      if (rad .lt. 1e-14) rad = 1e-14
+      rhx = x / rad
+      rhy = y / rad
+      rhz = z / rad
+
+      buoy = Ra * temp * rad / rro
+      ffx = buoy * rhx + (2.0 / Ek) * uy
+      ffy = buoy * rhy - (2.0 / Ek) * ux
+      ffz = buoy * rhz
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userq(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      qvol = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userbc(ix,iy,iz,iside,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      real eta, rri, rro, rad
+
+      eta = uparam(3)
+      rri = eta / (1.0 - eta)
+      rro = 1.0 / (1.0 - eta)
+
+      ux   = 0.0
+      uy   = 0.0
+      uz   = 0.0
+
+      rad = sqrt(x**2 + y**2 + z**2)
+      if (rad .lt. 0.5*(rri + rro)) then
+         temp = 1.0
+      else
+         temp = 0.0
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine useric(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      real eta, rri, rro, rad, th, phi
+      real T_s, xr, frad, pertAmp, sin4t
+      real rval
+
+      eta = uparam(3)
+      rri = eta / (1.0 - eta)
+      rro = 1.0 / (1.0 - eta)
+
+      rad = sqrt(x**2 + y**2 + z**2)
+      if (rad .lt. 1e-14) rad = 1e-14
+
+      th  = acos(z / rad)
+      phi = atan2(y, x)
+
+      ux = 0.0
+      uy = 0.0
+      uz = 0.0
+
+      T_s = rri * rro / rad - rri
+      temp = T_s + 5.0e-3*cos(16.0*phi)*sin(th)**16
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userchk()
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer n, csvWrite
+      real energy_kin, vol, umax
+      logical exists
+
+      common /save_geom/ xsave(lx1,ly1,lz1,lelt),
+     &                   ysave(lx1,ly1,lz1,lelt),
+     &                   zsave(lx1,ly1,lz1,lelt)
+      common /coord_tmp/ xtmp(lx1,ly1,lz1,lelt),
+     &                   ytmp(lx1,ly1,lz1,lelt),
+     &                   ztmp(lx1,ly1,lz1,lelt)
+      integer if_coords_swapped
+      save    if_coords_swapped
+      data    if_coords_swapped /0/
+
+      n = lx1*ly1*lz1*nelv
+      csvWrite = int(uparam(4))
+      if (csvWrite .le. 0) csvWrite = 10
+
+c     Blowup detection
+      if (istep .gt. 0) then
+         umax = glamax(vx, n)
+         if (umax .ne. umax .or. umax .gt. 1e20) then
+            if (nid .eq. 0) write(6,*) 'BLOWUP step', istep, umax
+            call exitt
+         endif
+      endif
+
+c     Geometry check - every step to find corruption
+      nxyz1 = lx1*ly1*lz1
+      nbad = 0
+      do ie = 1, nelv
+         do i = 1, nxyz1
+            if (ym1(i,1,1,ie) .lt. -0.01) then
+               nbad = nbad + 1
+            endif
+         enddo
+      enddo
+      nbad = iglsum(nbad, 1)
+      if (nbad .gt. 0) then
+         ymin_loc = glmin(ym1, n)
+         if (nid.eq.0) write(6,*)
+     &     'GEOM CORRUPT step', istep,
+     &     ' ymin=', ymin_loc, ' nbad=', nbad
+      endif
+
+c     Diagnostics
+      if (istep .eq. 0) then
+         if (nid .eq. 0) then
+            open(unit=51, file="reynolds.csv",
+     &           status="replace", action="write")
+            write(51,*)
+     &       "time, Re, Re_r, Re_theta, Re_phi, Re_conv,"
+     &      //" Re_zon_r, Re_zon_theta, Re_zon_phi"
+            close(51)
+
+            open(unit=52, file="nusselt.csv",
+     &           status="replace", action="write")
+            write(52,*) "time, Nu_in, Nu_out"
+            close(52)
+         endif
+      endif
+
+      if (mod(istep, csvWrite) .eq. 0) then
+         call getReynolds()
+         call getNusselt()
+      endif
+
+c     Dump ym1 stats at output steps
+      if (mod(istep,500).eq.0 .and. istep.gt.0) then
+         ymin_chk = glmin(ym1, lx1*ly1*lz1*nelt)
+         ymax_chk = glmax(ym1, lx1*ly1*lz1*nelt)
+         if (nid.eq.0) write(6,*)
+     &     'YM1 AT OUTPUT step', istep,
+     &     ymin_chk, ymax_chk
+      endif
+
+c     Final geometry check before file output
+      if (ifoutfld) then
+         nbad2 = 0
+         do ie = 1, nelt
+            do i = 1, lx1*ly1*lz1
+               if (ym1(i,1,1,ie) .lt. -0.01) then
+                  nbad2 = nbad2 + 1
+               endif
+            enddo
+         enddo
+         nbad2 = iglsum(nbad2, 1)
+         if (nid.eq.0) write(6,*)
+     &     'PRE-OUTPUT CHECK step', istep,
+     &     ' nbad=', nbad2
+      endif
+
+      nn = lx1*ly1*lz1*nelt
+
+c     Restore solver coords if we swapped last step
+      if (if_coords_swapped .eq. 1) then
+         call copy(xm1, xtmp, nn)
+         call copy(ym1, ytmp, nn)
+         call copy(zm1, ztmp, nn)
+         if_coords_swapped = 0
+      endif
+
+c     Before output: swap in saved (correct) coords
+      if (ifoutfld) then
+         call copy(xtmp, xm1, nn)
+         call copy(ytmp, ym1, nn)
+         call copy(ztmp, zm1, nn)
+         call copy(xm1, xsave, nn)
+         call copy(ym1, ysave, nn)
+         call copy(zm1, zsave, nn)
+         if_coords_swapped = 1
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userqtl
+      call userqtl_scig
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat()
+      include 'SIZE'
+      include 'TOTAL'
+
+      if (nid .eq. 0) then
+         write(6,*) 'Hydro shell: Ek=', uparam(1),
+     $     ' Ra=', uparam(2), ' eta=', uparam(3)
+      endif
+
+c     No P BCs in .re2 — anti-periodic module handles periodicity.
+c     fix_geom runs normally (no periodic vertices to corrupt).
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat2()
+      include 'SIZE'
+      include 'TOTAL'
+
+c     Save coordinates before fix_geom (merged periodic
+c     vertices cause dssum coordinate averaging).
+      common /save_geom/ xsave(lx1,ly1,lz1,lelt),
+     $                   ysave(lx1,ly1,lz1,lelt),
+     $                   zsave(lx1,ly1,lz1,lelt)
+
+      n = lx1*ly1*lz1*nelt
+      call copy(xsave, xm1, n)
+      call copy(ysave, ym1, n)
+      call copy(zsave, zm1, n)
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3()
+      include 'SIZE'
+      include 'TOTAL'
+
+c     Restore geometry and force ifcyclic
+      common /save_geom/ xsave(lx1,ly1,lz1,lelt),
+     $                   ysave(lx1,ly1,lz1,lelt),
+     $                   zsave(lx1,ly1,lz1,lelt)
+
+      integer nr_layers
+      integer elem_layer(lelt)
+      common /zonal_avg/ nr_layers, elem_layer
+
+      integer e
+
+      n = lx1*ly1*lz1*nelt
+      call copy(xm1, xsave, n)
+      call copy(ym1, ysave, n)
+      call copy(zm1, zsave, n)
+      param(59) = 1.
+      call geom_reset(1)
+
+c     Force ifcyclic for 180-deg periodicity
+      ifcyclic = .false.
+
+c     Set up anti-periodic flip mask for velocity dssum
+      call setup_pflip()
+
+c     Auto-detect nr from mesh (radial innermost ordering)
+      call detect_nr(nr_layers)
+      do e = 1, nelt
+         elem_layer(e) = mod(lglel(e) - 1, nr_layers) + 1
+      enddo
+      if (nio .eq. 0) then
+         write(6,*) 'Zonal avg: nr_layers =', nr_layers
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+c-----------------------------------------------------------------------
+c     Anti-periodic dssum module for 180-degree rotational periodicity.
+c
+c     For a hemisphere mesh with (x,y,z) -> (-x,-y,z) periodicity:
+c       - Scalar fields (T, p) are periodic:  f(partner) =  f(original)
+c       - Vector x,y components are anti-periodic: u(partner) = -u(original)
+c       - Vector z component is periodic: uz(partner) = uz(original)
+c
+c     This module uses TWO gs handles:
+c       1. Standard gs handle (from Nek5000): for interior shared nodes
+c       2. Periodic gs handle (built here):   for cut-plane periodic nodes
+c
+c     For vectors, the periodic exchange uses one-sided negation:
+c       - Negate ux,uy at "secondary" periodic nodes only
+c       - gs_op add on periodic handle → effectively computes (u_A - u_B)
+c       - Divide by multiplicity → (u_A - u_B)/2
+c       - Negate back at secondary nodes → node B gets -(u_A-u_B)/2
+c     Result: u_A = (u_A-u_B)/2, u_B = -u_A  (anti-periodic!)
+c
+c     Usage in .usr file:
+c       call setup_anti_periodic()     ! in usrdat3
+c       call dssum_ap(field, n)        ! scalar periodic dssum
+c       call vec_dssum_ap(ux,uy,uz,n)  ! vector anti-periodic dssum
+c
+c     Requires: hemisphere_periodic_pairs.dat in the run directory
+c-----------------------------------------------------------------------
+      subroutine setup_anti_periodic()
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      common /nekmpi/ mid,mp,nekcomm,nekgroup,nekreal
+
+      integer lnp
+      parameter (lnp = lx1*ly1*lz1*lelt)
+
+      integer*8 glo_num_p(lnp) ! global IDs for periodic gs handle
+
+c     pflip(i) =  0 : not a periodic node
+c     pflip(i) =  1 : primary side of periodic pair (no negate)
+c     pflip(i) = -1 : secondary side of periodic pair (negate for anti-periodic)
+      integer pflip(lnp)
+
+      integer gs_handle_p    ! periodic gather-scatter handle
+      real vmult_p(lnp)        ! multiplicity for periodic nodes
+
+      common /anti_periodic_data/ gs_handle_p, pflip, vmult_p
+
+      logical ap_initialized
+      common /anti_periodic_flag/ ap_initialized
+
+c     Local variables
+      integer npairs, ip
+      integer eid_a, eid_b, lf_a, lf_b
+      integer perm(0:3)
+      integer ie_a, ie_b
+      integer is_a, it_a, is_b, it_b
+      integer ix_a, iy_a, iz_a, ix_b, iy_b, iz_b
+      integer idx_a, idx_b
+      integer*8 gid_a, gid_b, gid_shared
+      integer io_unit, ierr
+      integer n, nxyz, i
+      integer eg2loc(lelg)
+
+      logical file_exists
+
+      nxyz = lx1*ly1*lz1
+      n = nxyz * nelt
+
+c     Initialize
+      do i = 1, n
+         pflip(i) = 0
+         glo_num_p(i) = 0
+         vmult_p(i) = 1.0
+      enddo
+
+c     Read periodic pairs file (all ranks read; file is small)
+      open(newunit=io_unit, file='shell_periodic_pairs.dat',
+     &     status='old', action='read', iostat=ierr)
+      if (ierr .ne. 0) then
+c        No periodic pairs file — set up identity (no-op) handle
+         do i = 1, n
+            glo_num_p(i) = (lglel(1) - 1)*nxyz + i  ! unique per node
+         enddo
+c        Use unique gids so gs_op is a no-op for each node
+         do ie_a = 1, nelt
+            do i = 1, nxyz
+               idx_a = (ie_a - 1)*nxyz + i
+               glo_num_p(idx_a) = (lglel(ie_a) - 1)*nxyz + i
+            enddo
+         enddo
+         if (nid.eq.0) write(6,*) 'AP DEBUG (disabled): n=', n,
+     &      ' nekcomm=', nekcomm, ' mp=', mp
+         call fgslib_gs_setup(gs_handle_p, glo_num_p, n,
+     &                        nekcomm, mp)
+         if (nid.eq.0) write(6,*)
+     &      'Anti-periodic: DISABLED (no pairs file found)'
+         ap_initialized = .true.
+         return
+      endif
+
+      read(io_unit, *) npairs
+
+      if (nid.eq.0) then
+         write(6,*) 'Anti-periodic: reading', npairs, 'face pairs'
+      endif
+
+c     First pass: assign base global IDs for local elements
+c     gid = (eg-1)*nxyz + local_gll_offset (deterministic, global)
+      do ie_a = 1, nelt
+         do i = 1, nxyz
+            idx_a = (ie_a - 1)*nxyz + i
+            glo_num_p(idx_a) = (lglel(ie_a) - 1)*nxyz + i
+         enddo
+      enddo
+
+c     Build lookup: global_elem_id -> local_elem_id
+      do i = 1, lelg
+         eg2loc(i) = 0
+      enddo
+      do i = 1, nelt
+         eg2loc(lglel(i)) = i
+      enddo
+
+c     Second pass: for each periodic pair, assign matching gids.
+c     Each rank reads ALL pairs but only modifies its local nodes.
+c     Convention: for pair (eid_a, eid_b), the node whose base gid
+c     is LOWER is "primary" (pflip=1), the other is "secondary" (pflip=-1).
+      do ip = 1, npairs
+         read(io_unit, *) eid_a, lf_a, eid_b, lf_b,
+     &                    perm(0), perm(1), perm(2), perm(3)
+
+         ie_a = 0
+         ie_b = 0
+         if (eid_a .le. lelg) ie_a = eg2loc(eid_a)
+         if (eid_b .le. lelg) ie_b = eg2loc(eid_b)
+
+c        Skip if neither element is local
+         if (ie_a .eq. 0 .and. ie_b .eq. 0) goto 100
+
+c        Loop over face GLL nodes
+         do it_a = 1, lx1
+         do is_a = 1, lx1
+
+c           Compute partner (is_b, it_b) via permutation
+            call apply_face_perm(is_a, it_a, lx1, perm,
+     &                           is_b, it_b)
+
+c           Map face-local to volume indices
+            call face_to_vol(lf_a, is_a, it_a, lx1,
+     &                       ix_a, iy_a, iz_a)
+            call face_to_vol(lf_b, is_b, it_b, lx1,
+     &                       ix_b, iy_b, iz_b)
+
+c           Compute GLOBAL gids for both nodes (deterministic)
+            gid_a = (eid_a-1)*nxyz + (iz_a-1)*lx1*ly1
+     &              + (iy_a-1)*lx1 + ix_a
+            gid_b = (eid_b-1)*nxyz + (iz_b-1)*lx1*ly1
+     &              + (iy_b-1)*lx1 + ix_b
+            gid_shared = min(gid_a, gid_b)
+
+c           Apply shared gid and set pflip for local nodes
+            if (ie_a .gt. 0) then
+               idx_a = (ie_a-1)*nxyz + (iz_a-1)*lx1*ly1
+     &                 + (iy_a-1)*lx1 + ix_a
+               glo_num_p(idx_a) = gid_shared
+               if (gid_a .le. gid_b) then
+                  pflip(idx_a) = 1   ! primary
+               else
+                  pflip(idx_a) = -1  ! secondary
+               endif
+            endif
+
+            if (ie_b .gt. 0) then
+               idx_b = (ie_b-1)*nxyz + (iz_b-1)*lx1*ly1
+     &                 + (iy_b-1)*lx1 + ix_b
+               glo_num_p(idx_b) = gid_shared
+               if (gid_b .le. gid_a) then
+                  pflip(idx_b) = 1   ! primary
+               else
+                  pflip(idx_b) = -1  ! secondary
+               endif
+            endif
+
+         enddo
+         enddo
+
+ 100     continue
+      enddo
+
+      close(io_unit)
+
+c     Set up periodic gs handle
+      if (nid.eq.0) then
+         write(6,*) 'AP DEBUG: n=', n, ' nekcomm=', nekcomm,
+     &              ' mp=', mp, ' nid=', nid
+         write(6,*) 'AP DEBUG: glo_num_p(1)=', glo_num_p(1),
+     &              ' glo_num_p(n)=', glo_num_p(n)
+c        Count non-zero entries
+         idx_a = 0
+         do i = 1, n
+            if (glo_num_p(i) .ne. 0) idx_a = idx_a + 1
+         enddo
+         write(6,*) 'AP DEBUG: non-zero glo_num_p:', idx_a, '/', n
+c        Count periodic entries
+         idx_a = 0
+         idx_b = 0
+         do i = 1, n
+            if (pflip(i) .eq. 1) idx_a = idx_a + 1
+            if (pflip(i) .eq. -1) idx_b = idx_b + 1
+         enddo
+         write(6,*) 'AP DEBUG: primary:', idx_a,
+     &              ' secondary:', idx_b
+      endif
+      call fgslib_gs_setup(gs_handle_p, glo_num_p, n,
+     &                     nekcomm, mp)
+
+c     Compute periodic multiplicity
+      do i = 1, n
+         vmult_p(i) = 1.0
+      enddo
+      call fgslib_gs_op(gs_handle_p, vmult_p, 1, 1, 0)  ! add
+      do i = 1, n
+         if (vmult_p(i) .gt. 0.0) then
+            vmult_p(i) = 1.0 / vmult_p(i)
+         else
+            vmult_p(i) = 1.0
+         endif
+      enddo
+
+c     Diagnostics
+      if (nid.eq.0) then
+         i = 0
+         do idx_a = 1, n
+            if (pflip(idx_a) .ne. 0) i = i + 1
+         enddo
+         write(6,*) 'Anti-periodic: initialized,',
+     &              i, 'periodic GLL nodes on rank 0'
+      endif
+
+      ap_initialized = .true.
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine face_to_vol(iface, is, it, N, ix, iy, iz)
+c     Map face-local coordinates (is, it) to volume (ix, iy, iz).
+c
+c     Nek5000 convention:
+c       Face 1: (ix,iy,iz) = (is,   1,       it)       y-min
+c       Face 2: (ix,iy,iz) = (N,    is,      it)       x-max
+c       Face 3: (ix,iy,iz) = (N+1-is, N,     it)       y-max
+c       Face 4: (ix,iy,iz) = (1,    N+1-is,  it)       x-min
+c       Face 5: (ix,iy,iz) = (it,   is,      1)        z-min
+c       Face 6: (ix,iy,iz) = (is,   it,      N)        z-max
+      integer iface, is, it, N, ix, iy, iz
+
+      if (iface .eq. 1) then
+         ix = is;  iy = 1;       iz = it
+      elseif (iface .eq. 2) then
+         ix = N;   iy = is;      iz = it
+      elseif (iface .eq. 3) then
+         ix = N+1-is; iy = N;    iz = it
+      elseif (iface .eq. 4) then
+         ix = 1;   iy = N+1-is;  iz = it
+      elseif (iface .eq. 5) then
+         ix = it;  iy = is;      iz = 1
+      elseif (iface .eq. 6) then
+         ix = is;  iy = it;      iz = N
+      else
+         write(6,*) 'ERROR in face_to_vol: bad face', iface
+         call exitt
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine apply_face_perm(is_a, it_a, N, perm, is_b, it_b)
+c     Apply D4 vertex permutation to face-local GLL coordinates.
+c
+c     perm[0:3]: vertex i of face_A maps to vertex perm[i] of face_B.
+c
+c     All 8 D4 permutations:
+c       [0,1,2,3] identity:     is_b = is_a,       it_b = it_a
+c       [1,2,3,0] 90deg rot:   is_b = N+1-it_a,   it_b = is_a
+c       [2,3,0,1] 180deg rot:  is_b = N+1-is_a,   it_b = N+1-it_a
+c       [3,0,1,2] 270deg rot:  is_b = it_a,        it_b = N+1-is_a
+c       [1,0,3,2] s-flip:      is_b = N+1-is_a,   it_b = it_a
+c       [3,2,1,0] t-flip:      is_b = is_a,        it_b = N+1-it_a
+c       [0,3,2,1] transpose:   is_b = it_a,        it_b = is_a
+c       [2,1,0,3] anti-trans:  is_b = N+1-it_a,   it_b = N+1-is_a
+      integer is_a, it_a, N, perm(0:3), is_b, it_b
+      integer key
+
+c     Encode permutation as single integer for dispatch
+      key = perm(0)*1000 + perm(1)*100 + perm(2)*10 + perm(3)
+
+      if (key .eq. 123) then        ! [0,1,2,3] identity
+         is_b = is_a
+         it_b = it_a
+      elseif (key .eq. 1230) then   ! [1,2,3,0] 90 rot
+         is_b = N + 1 - it_a
+         it_b = is_a
+      elseif (key .eq. 2301) then   ! [2,3,0,1] 180 rot
+         is_b = N + 1 - is_a
+         it_b = N + 1 - it_a
+      elseif (key .eq. 3012) then   ! [3,0,1,2] 270 rot
+         is_b = it_a
+         it_b = N + 1 - is_a
+      elseif (key .eq. 1032) then   ! [1,0,3,2] s-flip
+         is_b = N + 1 - is_a
+         it_b = it_a
+      elseif (key .eq. 3210) then   ! [3,2,1,0] t-flip
+         is_b = is_a
+         it_b = N + 1 - it_a
+      elseif (key .eq. 321) then    ! [0,3,2,1] transpose
+         is_b = it_a
+         it_b = is_a
+      elseif (key .eq. 2103) then   ! [2,1,0,3] anti-transpose
+         is_b = N + 1 - it_a
+         it_b = N + 1 - is_a
+      else
+         write(6,*) 'ERROR: unknown face permutation', perm
+         call exitt
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine dssum_ap(u, n)
+c     Direct stiffness summation for SCALAR periodic fields.
+c     Scalars are periodic: u(partner) = u(original).
+c
+c     Algorithm:
+c       1. Standard dssum (interior shared nodes)
+c       2. Periodic gs_add + divide by multiplicity
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer n
+      real u(n)
+
+      integer lnp
+      parameter (lnp = lx1*ly1*lz1*lelt)
+
+      integer gs_handle_p
+      integer pflip(lnp)
+      real vmult_p(lnp)
+      common /anti_periodic_data/ gs_handle_p, pflip, vmult_p
+
+      integer i
+
+c     Standard dssum (interior shared nodes)
+      call dssum(u, lx1, ly1, lz1)
+
+c     Periodic exchange: add + average
+      call fgslib_gs_op(gs_handle_p, u, 1, 1, 0)  ! add
+      do i = 1, n
+         u(i) = u(i) * vmult_p(i)
+      enddo
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine vec_dssum_ap(ux, uy, uz, n)
+c     Direct stiffness summation for VECTOR fields with anti-periodic BCs.
+c
+c     Under 180-degree rotation about z: (ux,uy,uz) -> (-ux,-uy,uz)
+c     So ux, uy are anti-periodic and uz is periodic.
+c
+c     Algorithm (one-sided negation):
+c       1. Standard dssum on all three components
+c       2. For anti-periodic components (ux, uy):
+c          a. Negate at SECONDARY periodic nodes (pflip=-1) only
+c          b. gs_add on periodic handle
+c          c. Multiply by vmult_p (average)
+c          d. Negate at secondary nodes again (restore sign)
+c       3. For periodic component (uz):
+c          a. gs_add on periodic handle
+c          b. Multiply by vmult_p
+c
+c     Result at periodic pair (A=primary, B=secondary):
+c       Anti-periodic: u_A = (u_A - u_B)/2, u_B = -(u_A - u_B)/2 = -u_A
+c       Periodic: uz_A = uz_B = (uz_A + uz_B)/2
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer n
+      real ux(n), uy(n), uz(n)
+
+      integer lnp
+      parameter (lnp = lx1*ly1*lz1*lelt)
+
+      integer gs_handle_p
+      integer pflip(lnp)
+      real vmult_p(lnp)
+      common /anti_periodic_data/ gs_handle_p, pflip, vmult_p
+
+      integer i
+
+c     Step 1: Standard dssum (interior shared nodes)
+      call dssum(ux, lx1, ly1, lz1)
+      call dssum(uy, lx1, ly1, lz1)
+      call dssum(uz, lx1, ly1, lz1)
+
+c     Step 2a: Negate ux, uy at SECONDARY periodic nodes only
+      do i = 1, n
+         if (pflip(i) .eq. -1) then
+            ux(i) = -ux(i)
+            uy(i) = -uy(i)
+         endif
+      enddo
+
+c     Step 2b: Periodic gs_add for ux, uy
+      call fgslib_gs_op(gs_handle_p, ux, 1, 1, 0)  ! add
+      call fgslib_gs_op(gs_handle_p, uy, 1, 1, 0)  ! add
+
+c     Step 2c: Also do periodic gs_add for uz (periodic, not anti-periodic)
+      call fgslib_gs_op(gs_handle_p, uz, 1, 1, 0)  ! add
+
+c     Step 2d: Apply periodic multiplicity to all
+      do i = 1, n
+         ux(i) = ux(i) * vmult_p(i)
+         uy(i) = uy(i) * vmult_p(i)
+         uz(i) = uz(i) * vmult_p(i)
+      enddo
+
+c     Step 2e: Negate ux, uy back at secondary nodes
+      do i = 1, n
+         if (pflip(i) .eq. -1) then
+            ux(i) = -ux(i)
+            uy(i) = -uy(i)
+         endif
+      enddo
+
+      return
+      end
+c-----------------------------------------------------------------------
+c-----------------------------------------------------------------------
+      subroutine vec_dssum_ap_exchange(ux, uy, uz, n)
+c
+c     Periodic exchange only (called after standard vec_dssum).
+c     Applies anti-periodic exchange for ux,uy and periodic for uz.
+c     No-op if anti-periodic handle not initialized.
+c
+      include 'SIZE'
+
+      integer n
+      real ux(n), uy(n), uz(n)
+
+      integer lnp
+      parameter (lnp = lx1*ly1*lz1*lelt)
+
+      integer pflip(lnp)
+      integer gs_handle_p
+      real vmult_p(lnp)
+      common /anti_periodic_data/ gs_handle_p, pflip, vmult_p
+
+      logical ap_initialized
+      common /anti_periodic_flag/ ap_initialized
+
+      integer i
+
+c     Skip if not initialized
+      if (.not. ap_initialized) return
+
+c     Anti-periodic exchange for ux, uy:
+c     Negate secondary nodes, gs_add, vmult, negate back
+      do i = 1, n
+         if (pflip(i) .eq. -1) then
+            ux(i) = -ux(i)
+            uy(i) = -uy(i)
+         endif
+      enddo
+
+      call fgslib_gs_op(gs_handle_p, ux, 1, 1, 0)
+      call fgslib_gs_op(gs_handle_p, uy, 1, 1, 0)
+
+      do i = 1, n
+         ux(i) = ux(i) * vmult_p(i)
+         uy(i) = uy(i) * vmult_p(i)
+      enddo
+
+      do i = 1, n
+         if (pflip(i) .eq. -1) then
+            ux(i) = -ux(i)
+            uy(i) = -uy(i)
+         endif
+      enddo
+
+c     Periodic exchange for uz (no negation)
+      call fgslib_gs_op(gs_handle_p, uz, 1, 1, 0)
+      do i = 1, n
+         uz(i) = uz(i) * vmult_p(i)
+      enddo
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine dssum_ap_exchange(u, n)
+c
+c     Scalar periodic exchange for 180-deg rotational periodicity.
+c     Scalars are periodic (no sign flip): u(partner) = u(original).
+c     Called after standard dssum gs_op + vmult.
+c
+      implicit none
+      include 'SIZE'
+
+      integer n
+      real u(n)
+
+      integer lnp
+      parameter (lnp = lx1*ly1*lz1*lelt)
+
+      integer gs_handle_p
+      integer pflip(lnp)
+      real vmult_p(lnp)
+      common /anti_periodic_data/ gs_handle_p, pflip, vmult_p
+
+      logical ap_initialized
+      common /anti_periodic_flag/ ap_initialized
+
+      integer i
+
+c     Skip if not initialized
+      if (.not. ap_initialized) return
+
+c     Periodic add + average (no sign flip for scalars)
+      call fgslib_gs_op(gs_handle_p, u, 1, 1, 0)  ! add
+      do i = 1, n
+         u(i) = u(i) * vmult_p(i)
+      enddo
+
+      return
+      end
+c-----------------------------------------------------------------------
+c-----------------------------------------------------------------------
+      block data ap_flag_init
+      logical ap_initialized
+      common /anti_periodic_flag/ ap_initialized
+      data ap_initialized /.false./
+      end
+c-----------------------------------------------------------------------
+      subroutine setup_pflip()
+c
+c     Build pflip_vel mask for anti-periodic velocity dssum.
+c     pflip_vel(i) = -1 at secondary periodic face nodes
+c     pflip_vel(i) =  0 elsewhere
+c     Secondary = face center at x < 0 (phi=180 edge).
+c     Using geometry (not global IDs) ensures consistency
+c     at shared edge/corner nodes between neighboring elements.
+c
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer lnp
+      parameter (lnp = lx1*ly1*lz1*lelt)
+
+      integer pflip_vel(lnp)
+      logical if_ap_setup
+      common /ap_flip_data/ pflip_vel, if_ap_setup
+
+      integer e, f, nfaces, n, nfn
+      integer kx1,kx2,ky1,ky2,kz1,kz2
+      integer ix, iy, iz, idx
+      character*3 cb
+      real xavg
+
+      n = lx1*ly1*lz1*nelt
+      do idx = 1, n
+         pflip_vel(idx) = 0
+      enddo
+
+      nfaces = 2*ldim
+      do e = 1, nelv
+         do f = 1, nfaces
+            cb = cbc(f, e, 1)
+            if (cb .eq. 'P  ') then
+c              Compute face center x-coordinate
+               call facind(kx1,kx2,ky1,ky2,
+     &           kz1,kz2,lx1,ly1,lz1,f)
+               xavg = 0.0
+               nfn = 0
+               do iz = kz1, kz2
+               do iy = ky1, ky2
+               do ix = kx1, kx2
+                  xavg = xavg + xm1(ix,iy,iz,e)
+                  nfn = nfn + 1
+               enddo
+               enddo
+               enddo
+               xavg = xavg / nfn
+c              Secondary = face at x < 0 (phi=180 edge)
+               if (xavg .lt. 0.0) then
+                  do iz = kz1, kz2
+                  do iy = ky1, ky2
+                  do ix = kx1, kx2
+                     idx = ix + lx1*(iy-1)
+     &                   + lx1*ly1*(iz-1)
+     &                   + lx1*ly1*lz1*(e-1)
+                     pflip_vel(idx) = -1
+                  enddo
+                  enddo
+                  enddo
+               endif
+            endif
+         enddo
+      enddo
+
+      if_ap_setup = .true.
+
+c     Count and report
+      idx = 0
+      do e = 1, n
+         if (pflip_vel(e) .eq. -1) idx = idx+1
+      enddo
+      idx = iglsum(idx, 1)
+      if (nio .eq. 0) write(6,*)
+     &  'AP flip: ', idx, ' secondary nodes'
+
+c     Check vmult at pflip nodes
+      vmmin_p = 1e30
+      vmmax_p = -1e30
+      nfp = 0
+      do idx = 1, n
+         if (pflip_vel(idx) .eq. -1) then
+            nfp = nfp + 1
+            if (vmult(idx,1,1,1).lt.vmmin_p) vmmin_p=vmult(idx,1,1,1)
+            if (vmult(idx,1,1,1).gt.vmmax_p) vmmax_p=vmult(idx,1,1,1)
+         endif
+      enddo
+      if (nid .eq. 0) write(6,*)
+     &  'VMULT at pflip: nf=', nfp,
+     &  ' min=', vmmin_p, ' max=', vmmax_p
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine detect_nr(nr)
+c     Auto-detect number of radial element layers from mesh.
+c     Relies on gen_hemisphere.py ordering: radial is innermost loop,
+c     so global element 1 is in layer 1, element 2 in layer 2, etc.
+c     Element nr+1 wraps back to the same radius as element 1.
+c     We find nr by broadcasting centroid radius of eg=1, then
+c     counting how many elements share that radius (= nelg/nr).
+      implicit none
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer nr
+
+      integer e, nxyz, nmatches, nmatches_g, iglsum
+      real rc1, rc_e, tol, glmin, glmax, rmin, rmax
+
+      nxyz = lx1*ly1*lz1
+
+c     Find centroid radius of global element 1
+      rc1 = 0.0
+      do e = 1, nelt
+         if (lglel(e) .eq. 1) then
+            rc1 = sqrt(
+     &        (sum(xm1(1:lx1,1:ly1,1:lz1,e)) / nxyz)**2 +
+     &        (sum(ym1(1:lx1,1:ly1,1:lz1,e)) / nxyz)**2 +
+     &        (sum(zm1(1:lx1,1:ly1,1:lz1,e)) / nxyz)**2)
+         endif
+      enddo
+      rc1 = glmax(rc1, 1)  ! broadcast to all ranks (only one has it)
+
+c     Tolerance: fraction of shell thickness / expected max nr
+      rmin = glmin(xm1, nxyz*nelt)  ! rough lower bound
+      rmax = glmax(xm1, nxyz*nelt)
+c     Use a generous tolerance based on element size
+      tol = 0.01 * rc1
+
+c     Count local elements with same centroid radius as element 1
+      nmatches = 0
+      do e = 1, nelt
+         rc_e = sqrt(
+     &     (sum(xm1(1:lx1,1:ly1,1:lz1,e)) / nxyz)**2 +
+     &     (sum(ym1(1:lx1,1:ly1,1:lz1,e)) / nxyz)**2 +
+     &     (sum(zm1(1:lx1,1:ly1,1:lz1,e)) / nxyz)**2)
+         if (abs(rc_e - rc1) .lt. tol) nmatches = nmatches + 1
+      enddo
+
+c     Global sum of matches = number of angular elements per layer
+      nmatches_g = iglsum(nmatches, 1)
+
+c     nr = total elements / elements per layer
+      if (nmatches_g .gt. 0) then
+         nr = nelgv / nmatches_g
+      else
+         nr = 1
+      endif
+
+c     Sanity check
+      if (mod(nelgv, nr) .ne. 0) then
+         if (nio .eq. 0) then
+            write(6,*) 'WARNING: detect_nr: nelg not divisible by nr'
+            write(6,*) '  nelg=', nelgv, ' nr=', nr,
+     &                 ' matches=', nmatches_g
+         endif
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine getReynolds()
+      implicit none
+      include 'SIZE'
+      include 'TOTAL'
+
+      real sph_ur(lx1,ly1,lz1,lelt)
+      real sph_ut(lx1,ly1,lz1,lelt)
+      real sph_up(lx1,ly1,lz1,lelt)
+      common /sph_vel/ sph_ur, sph_ut, sph_up
+
+      real ur2, ut2, up2, re, re_r, re_t, re_p
+      real rad, rperp, xx, yy, zz
+      real re_conv, re_zon_r, re_zon_t, re_zon_p
+      integer n, i, j, k, e
+      real glsc3
+
+      n = lx1*ly1*lz1*nelv
+
+c     Convert Cartesian velocity to spherical components
+      do e = 1, nelv
+        do k = 1, lz1
+          do j = 1, ly1
+            do i = 1, lx1
+              xx = xm1(i,j,k,e)
+              yy = ym1(i,j,k,e)
+              zz = zm1(i,j,k,e)
+              rad = sqrt(xx**2 + yy**2 + zz**2)
+              rperp = sqrt(xx**2 + yy**2)
+              if (rad .lt. 1e-14) rad = 1e-14
+
+              sph_ur(i,j,k,e) = (xx*vx(i,j,k,e)
+     &          + yy*vy(i,j,k,e) + zz*vz(i,j,k,e)) / rad
+
+              if (rperp .lt. 1e-14) then
+c               At poles: u_theta and u_phi undefined
+                sph_ut(i,j,k,e) = 0.0
+                sph_up(i,j,k,e) = 0.0
+              else
+                sph_ut(i,j,k,e) = (xx*zz*vx(i,j,k,e)
+     &            + yy*zz*vy(i,j,k,e)
+     &            - rperp**2*vz(i,j,k,e)) / (rad*rperp)
+                sph_up(i,j,k,e) = (-yy*vx(i,j,k,e)
+     &            + xx*vy(i,j,k,e)) / rperp
+              endif
+            enddo
+          enddo
+        enddo
+      enddo
+
+c     Volume-weighted RMS for each spherical component
+      ur2 = glsc3(sph_ur, sph_ur, bm1, n)
+      ut2 = glsc3(sph_ut, sph_ut, bm1, n)
+      up2 = glsc3(sph_up, sph_up, bm1, n)
+
+      re_r = sqrt(ur2 / volvm1)
+      re_t = sqrt(ut2 / volvm1)
+      re_p = sqrt(up2 / volvm1)
+      re   = sqrt((ur2 + ut2 + up2) / volvm1)
+
+c     Convective Reynolds number (zonal flow subtracted)
+      call getReConv(re_conv,re_zon_r,re_zon_t,re_zon_p)
+
+      if (nid .eq. 0) then
+         write(6,10) istep, time, re, re_conv
+   10    format(i8, 1p3e16.8, ' Re Re_conv')
+         open(unit=51, file="reynolds.csv",
+     &        position="append",
+     &        status="old", action="write")
+         write(51,*) time,",",re,",",re_r,
+     &        ",",re_t,",",re_p,",",re_conv,
+     &        ",",re_zon_r,",",re_zon_t,",",re_zon_p
+         close(51)
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine getReConv(re_conv,re_zon_r,re_zon_t,re_zon_p)
+c     Convective Reynolds number: RMS velocity with zonal (layer)
+c     mean subtracted.  Layer = radial shell of elements sharing the
+c     same topological index from gen_hemisphere.py.
+c     Also returns RMS of zonal-mean velocity per spherical component.
+      implicit none
+      include 'SIZE'
+      include 'TOTAL'
+
+      real re_conv, re_zon_r, re_zon_t, re_zon_p
+
+      real sph_ur(lx1,ly1,lz1,lelt)
+      real sph_ut(lx1,ly1,lz1,lelt)
+      real sph_up(lx1,ly1,lz1,lelt)
+      common /sph_vel/ sph_ur, sph_ut, sph_up
+
+      integer nr_layers
+      integer elem_layer(lelt)
+      common /zonal_avg/ nr_layers, elem_layer
+
+      integer lnr
+      parameter (lnr = 200)
+
+      real sum_ur(lnr), sum_ut(lnr), sum_up(lnr), sum_vol(lnr)
+      real wrk(lnr)
+      real mean_ur(lnr), mean_ut(lnr), mean_up(lnr)
+
+      real fluct2, zon_r2, zon_t2, zon_p2, glsum
+      integer i, j, k, e, kl
+
+c     Zero accumulators
+      do kl = 1, nr_layers
+         sum_ur(kl)  = 0.0
+         sum_ut(kl)  = 0.0
+         sum_up(kl)  = 0.0
+         sum_vol(kl) = 0.0
+      enddo
+
+c     Pass 1: accumulate per-layer volume-weighted sums
+      do e = 1, nelv
+         kl = elem_layer(e)
+         do k = 1, lz1
+           do j = 1, ly1
+             do i = 1, lx1
+               sum_ur(kl)  = sum_ur(kl)
+     &           + sph_ur(i,j,k,e) * bm1(i,j,k,e)
+               sum_ut(kl)  = sum_ut(kl)
+     &           + sph_ut(i,j,k,e) * bm1(i,j,k,e)
+               sum_up(kl)  = sum_up(kl)
+     &           + sph_up(i,j,k,e) * bm1(i,j,k,e)
+               sum_vol(kl) = sum_vol(kl) + bm1(i,j,k,e)
+             enddo
+           enddo
+         enddo
+      enddo
+
+c     MPI reduce across all ranks
+      call gop(sum_ur,  wrk, '+  ', nr_layers)
+      call gop(sum_ut,  wrk, '+  ', nr_layers)
+      call gop(sum_up,  wrk, '+  ', nr_layers)
+      call gop(sum_vol, wrk, '+  ', nr_layers)
+
+c     Compute layer means
+      do kl = 1, nr_layers
+         if (sum_vol(kl) .gt. 0.0) then
+            mean_ur(kl) = sum_ur(kl) / sum_vol(kl)
+            mean_ut(kl) = sum_ut(kl) / sum_vol(kl)
+            mean_up(kl) = sum_up(kl) / sum_vol(kl)
+         else
+            mean_ur(kl) = 0.0
+            mean_ut(kl) = 0.0
+            mean_up(kl) = 0.0
+         endif
+      enddo
+
+c     Pass 2: compute fluctuating KE and zonal-mean KE
+      fluct2 = 0.0
+      zon_r2 = 0.0
+      zon_t2 = 0.0
+      zon_p2 = 0.0
+      do e = 1, nelv
+         kl = elem_layer(e)
+         do k = 1, lz1
+           do j = 1, ly1
+             do i = 1, lx1
+               fluct2 = fluct2 +
+     &          ((sph_ur(i,j,k,e) - mean_ur(kl))**2
+     &         + (sph_ut(i,j,k,e) - mean_ut(kl))**2
+     &         + (sph_up(i,j,k,e) - mean_up(kl))**2)
+     &         * bm1(i,j,k,e)
+               zon_r2 = zon_r2
+     &           + mean_ur(kl)**2 * bm1(i,j,k,e)
+               zon_t2 = zon_t2
+     &           + mean_ut(kl)**2 * bm1(i,j,k,e)
+               zon_p2 = zon_p2
+     &           + mean_up(kl)**2 * bm1(i,j,k,e)
+             enddo
+           enddo
+         enddo
+      enddo
+
+      fluct2 = glsum(fluct2, 1)
+      zon_r2 = glsum(zon_r2, 1)
+      zon_t2 = glsum(zon_t2, 1)
+      zon_p2 = glsum(zon_p2, 1)
+
+      re_conv  = sqrt(fluct2 / volvm1)
+      re_zon_r = sqrt(zon_r2 / volvm1)
+      re_zon_t = sqrt(zon_t2 / volvm1)
+      re_zon_p = sqrt(zon_p2 / volvm1)
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine getNusselt()
+      implicit none
+      include 'SIZE'
+      include 'TOTAL'
+
+      real dTdx(lx1,ly1,lz1,lelt,1)
+      real dTdy(lx1,ly1,lz1,lelt,1)
+      real dTdz(lx1,ly1,lz1,lelt,1)
+      real dTdr(lx1,ly1,lz1,lelt)
+
+      real eta, ri, ro, rmid, rad
+      real dphi, dS
+      real tarea_in, tarea_out
+      real area_in, area_out
+      real Nu_in, Nu_out, glsum
+      real rc
+
+      integer i, j, k, e, iside
+      integer ic, jc, kc
+      character*3 side
+
+      eta = uparam(3)
+      ri  = eta / (1.0 - eta)
+      ro  = 1.0 / (1.0 - eta)
+      rmid = 0.5 * (ri + ro)
+
+      call gradm1(dTdx, dTdy, dTdz, t)
+
+c     Compute dT/dr
+      do e = 1, nelt
+        do k = 1, lz1
+          do j = 1, ly1
+            do i = 1, lx1
+              rad = sqrt(xm1(i,j,k,e)**2
+     &          + ym1(i,j,k,e)**2
+     &          + zm1(i,j,k,e)**2)
+              if (rad.lt.1e-14) rad = 1e-14
+              dTdr(i,j,k,e) =
+     &          (dTdx(i,j,k,e,1)*xm1(i,j,k,e)
+     &         + dTdy(i,j,k,e,1)*ym1(i,j,k,e)
+     &         + dTdz(i,j,k,e,1)*zm1(i,j,k,e))
+     &          / rad
+            enddo
+          enddo
+        enddo
+      enddo
+
+c     Surface integral on boundaries
+      tarea_in  = 0.0
+      tarea_out = 0.0
+      area_in   = 0.0
+      area_out  = 0.0
+
+      do e = 1, nelt
+        do iside = 1, 6
+          side = cbc(iside, e, 2)
+          if (side.eq.'t  ') then
+            ic = (lx1+1)/2
+            jc = (ly1+1)/2
+            kc = (lz1+1)/2
+            if (iside.eq.1) ic = 1
+            if (iside.eq.2) ic = lx1
+            if (iside.eq.3) jc = 1
+            if (iside.eq.4) jc = ly1
+            if (iside.eq.5) kc = 1
+            if (iside.eq.6) kc = lz1
+            rc = sqrt(
+     &        xm1(ic,jc,kc,e)**2
+     &       +ym1(ic,jc,kc,e)**2
+     &       +zm1(ic,jc,kc,e)**2)
+
+            call surface_int(dphi,dS,
+     &        dTdr,e,iside)
+            if (rc .lt. rmid) then
+              tarea_in = tarea_in + dphi
+              area_in  = area_in  + dS
+            else
+              tarea_out = tarea_out + dphi
+              area_out  = area_out  + dS
+            endif
+          endif
+        enddo
+      enddo
+
+c     Normalize by conductive gradient
+      Nu_in  = glsum(tarea_in,1)
+     &  / glsum(area_in,1) / (-ro/ri)
+      Nu_out = glsum(tarea_out,1)
+     &  / glsum(area_out,1) / (-ri/ro)
+
+      if (nid .eq. 0) then
+         open(unit=52, file="nusselt.csv",
+     &     position="append",
+     &     status="old", action="write")
+         write(52,*) time,",",Nu_in,",",Nu_out
+         close(52)
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine bcrobin_mhd(h2)
+c     Dummy routine for hydro cases (no MHD)
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine init_robin_curvature()
+c     Dummy routine for hydro cases (no MHD)
+      return
+      end
+c-----------------------------------------------------------------------
+
+c-----------------------------------------------------------------------

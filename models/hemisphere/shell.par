@@ -1,0 +1,56 @@
+
+
+
+
+
+
+
+
+
+
+#
+# Yadav benchmark
+# Ek=1e-5, Ra=1e8, eta=0.35
+#
+
+[GENERAL]
+startFrom = shell0.restart int
+numSteps = 1e4
+#timeStepper = BDF3
+dt = 1.0e-5
+variabledt = yes
+targetCFL = 0.6
+writeControl = timeStep
+writeInterval = 500
+dealiasing = yes
+
+userParam01 = 1e-4       # Ekman number Ek
+userParam02 = 4.0e6    # Rayleigh number Ra
+userParam03 = 0.35       # Radius ratio eta
+userParam04 = 10         # Diagnostic output every N steps
+userParam05 = 0         # IC mode: 0=normal, 1=Jackson, 2=dynamo seed
+
+[PROBLEMTYPE]
+equation = incompNS
+stressFormulation = no
+
+[PRESSURE]
+residualTol = 1e-5
+residualProj = yes
+
+
+[VELOCITY]
+residualTol = 1e-5
+residualProj = yes
+density = 1.0
+viscosity = 1.0
+
+[MESH]
+numberOfBCFields = 2
+
+[TEMPERATURE]
+residualTol = 1e-5
+residualProj = yes
+rhoCp = 1.0
+conductivity = 1.0
+

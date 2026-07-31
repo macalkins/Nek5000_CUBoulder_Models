@@ -1,0 +1,38 @@
+#
+# Rotating convection in a spherical shell (hydro only)
+# Yadav et al. PNAS 2016: Re ~ 75.7, Nu ~ 2.19 at these parameters
+#
+
+[GENERAL]
+numSteps = 5000
+dt = 1e-4
+variableDt = yes
+targetCFL = 0.5
+timeStepper = BDF3
+writeControl = timeStep
+writeInterval = 100
+dealiasing = yes
+#filtering = explicit
+#filterWeight = 0.01
+#filterModes = 1
+userParam01 = 1e-4     # Ekman number
+userParam02 = 5e6      # Rayleigh number
+userParam03 = 0.35     # Radius ratio eta = ri/ro
+userParam04 = 5        # Diagnostic output frequency (timesteps)
+
+[PROBLEMTYPE]
+equation = incompNS
+
+[PRESSURE]
+residualTol = 1e-5
+residualProj = yes
+
+[VELOCITY]
+residualTol = 1e-5
+density = 1.0
+viscosity = 1.0
+
+[TEMPERATURE]
+residualTol = 1e-5
+rhoCp = 1.0
+conductivity = 1.0     # 1/Pr = 1

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.re2
+*.ma2
+*.msh
+*.geo
+*.f0*
+run[0-9]*/
+nek5000
+obj/
+*.log

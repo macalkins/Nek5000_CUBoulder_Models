@@ -1,0 +1,43 @@
+# Nek5000 parameter file
+
+[GENERAL]
+#stopAt = endTime
+#endTime = 50.0
+stopAt = numSteps
+numSteps = 10000000        # large; production runs are walltime-limited
+#startFrom = rrbc_cylinder0.restart int   # uncomment to continue from a checkpoint
+dt = 1.0e-7
+variabledt = yes
+targetCFL = 0.5
+#writeControl = runTime
+#writeInterval = 1.0
+writeControl = timeStep
+writeInterval = 8000       # ~1 wall-hour at ~0.45 s/step on 576 ranks
+userParam01 = 14.1         # reduced Rayleigh number, R=Ra*Ek^{4/3}
+userParam02 = 1.73e-6      # Ekman number, E=nu/(2*Omega*H^2)
+userParam03 = 1.0          # aspect ratio (not used)
+userParam04 = 0.0          # IC seed: 0=random noise, 1=hex tessellation at k_c
+
+
+[PRESSURE]
+residualTol = 1e-6
+residualProj = yes
+writeToFieldFile = yes
+
+[VELOCITY]
+residualTol = 1e-6
+residualProj = yes
+density = 1.0
+viscosity = 1.0     
+writeToFieldFile = yes
+
+[TEMPERATURE]
+rhoCp = 1.0
+conductivity = 0.168964   # 1/Prandtl, Pr=5.92
+writeToFieldFile = yes
+residualTol = 1e-6
+
+[MESH]
+numberOfBCFields = 2
+writeToFieldFile = yes
+

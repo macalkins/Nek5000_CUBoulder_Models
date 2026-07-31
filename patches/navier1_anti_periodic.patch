@@ -1,0 +1,125 @@
+--- /tmp/Nek5000_upstream/core/navier1.f	2026-03-26 07:11:52
++++ /tmp/navier1_patched.f	2026-03-25 22:00:02
+@@ -2327,20 +2327,19 @@
+ c     sv=glsum(v3mask,ntot1)
+ c     sb=glsum(b3mask,ntot1)
+ c     write(6,*) istep,' ifld:',ifield,intype,sv,sb
+-      IF (IFSTRS) THEN
++c     For B-field (ifldmhd): always use RMASK to enforce ON BCs
++c     on curved faces with rotated-coordinate masking.
++c     For velocity: use standard col2 masking.
++c
++      if (ifield.eq.ifldmhd) then
++         CALL RMASK (RES1,RES2,RES3,NELV)
++      ELSE IF (IFSTRS) THEN
+          CALL RMASK (RES1,RES2,RES3,NELV)
+       ELSE
+-         if (ifield.eq.ifldmhd) then
+-            CALL COL2 (RES1,B1MASK,NTOT1)
+-            CALL COL2 (RES2,B2MASK,NTOT1)
+-            IF (ldim.EQ.3)
+-     $      CALL COL2 (RES3,B3MASK,NTOT1)
+-         else
+-            CALL COL2 (RES1,V1MASK,NTOT1)
+-            CALL COL2 (RES2,V2MASK,NTOT1)
+-            IF (ldim.EQ.3)
+-     $      CALL COL2 (RES3,V3MASK,NTOT1)
+-         endif
++         CALL COL2 (RES1,V1MASK,NTOT1)
++         CALL COL2 (RES2,V2MASK,NTOT1)
++         IF (ldim.EQ.3)
++     $   CALL COL2 (RES3,V3MASK,NTOT1)
+       ENDIF
+ C
+       return
+@@ -2588,7 +2587,32 @@
+ 
+       real a(1),b(1),c(1)
+ 
+-      if (ifcyclic) then
++      integer lnp
++      parameter (lnp = lx1*ly1*lz1*lelt)
++      integer pflip_vel(lnp)
++      logical if_ap_setup
++      common /ap_flip_data/ pflip_vel, if_ap_setup
++
++      integer i, n
++
++      if (if_ap_setup .and. ifield.eq.1) then
++c        180-deg anti-periodic: flip ux,uy at secondary
++c        nodes, dssum, flip back. uz is periodic (no flip).
++         n = lx1*ly1*lz1*nelfld(ifield)
++         do i = 1, n
++            if (pflip_vel(i).eq.-1) then
++               a(i) = -a(i)
++               b(i) = -b(i)
++            endif
++         enddo
++         call vec_dssum(a,b,c,lx1,ly1,lz1)
++         do i = 1, n
++            if (pflip_vel(i).eq.-1) then
++               a(i) = -a(i)
++               b(i) = -b(i)
++            endif
++         enddo
++      elseif (ifcyclic) then
+          call rotate_cyc  (a,b,c,1)
+          call vec_dssum   (a,b,c,lx1,ly1,lz1)
+          call rotate_cyc  (a,b,c,0)
+@@ -2610,20 +2634,45 @@
+       real a(1),b(1),c(1)
+       character*3 op
+ 
+-      if (ifcyclic) then
++      integer lnp
++      parameter (lnp = lx1*ly1*lz1*lelt)
++      integer pflip_vel(lnp)
++      logical if_ap_setup
++      common /ap_flip_data/ pflip_vel, if_ap_setup
+ 
+-         if (op.eq.'*  ' .or. op.eq.'mul' .or. op.eq.'MUL') then
+-            call vec_dsop    (a,b,c,lx1,ly1,lz1,op)
+-         else
+-            call rotate_cyc  (a,b,c,1)
+-            call vec_dsop    (a,b,c,lx1,ly1,lz1,op)
+-            call rotate_cyc  (a,b,c,0)
+-         endif
++      integer i, n
+ 
++      if (if_ap_setup .and. ifield.eq.1) then
++         if (op.eq.'*  '.or.op.eq.'mul'.or.
++     &       op.eq.'MUL') then
++            call vec_dsop(a,b,c,lx1,ly1,lz1,op)
++         else
++            n = lx1*ly1*lz1*nelfld(ifield)
++            do i = 1, n
++               if (pflip_vel(i).eq.-1) then
++                  a(i) = -a(i)
++                  b(i) = -b(i)
++               endif
++            enddo
++            call vec_dsop(a,b,c,lx1,ly1,lz1,op)
++            do i = 1, n
++               if (pflip_vel(i).eq.-1) then
++                  a(i) = -a(i)
++                  b(i) = -b(i)
++               endif
++            enddo
++         endif
++      elseif (ifcyclic) then
++         if (op.eq.'*  '.or.op.eq.'mul'.or.
++     &       op.eq.'MUL') then
++            call vec_dsop(a,b,c,lx1,ly1,lz1,op)
++         else
++            call rotate_cyc(a,b,c,1)
++            call vec_dsop(a,b,c,lx1,ly1,lz1,op)
++            call rotate_cyc(a,b,c,0)
++         endif
+       else
+-
+-         call vec_dsop    (a,b,c,lx1,ly1,lz1,op)
+-
++         call vec_dsop(a,b,c,lx1,ly1,lz1,op)
+       endif
+ 
+       return

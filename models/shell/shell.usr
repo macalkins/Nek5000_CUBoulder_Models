@@ -1,0 +1,389 @@
+c-----------------------------------------------------------------------
+c  Rotating convection in a spherical shell (hydro only)
+c  Parameters read from .par userParam array:
+c    uparam(1) = Ekman number
+c    uparam(2) = Rayleigh number
+c    uparam(3) = radius ratio eta = ri/ro
+c    uparam(4) = diagnostic IO frequency
+c-----------------------------------------------------------------------
+      subroutine uservp(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      udiff  = 0.0
+      utrans = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userf(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      real Ra, Ek, eta, ri, ro
+      real rh_x, rh_y, rh_z, buoy, rad
+
+      Ra  = uparam(2)
+      Ek  = uparam(1)
+      eta = uparam(3)
+      ri  = eta / (1.0 - eta)
+      ro  = 1.0 / (1.0 - eta)
+
+      rad = sqrt(x**2 + y**2 + z**2)
+      if (rad .lt. 1e-14) rad = 1e-14
+      rh_x = x / rad
+      rh_y = y / rad
+      rh_z = z / rad
+
+c     Buoyancy: Ra * T * (r/ro) * r_hat
+      buoy = Ra * temp * rad / ro
+
+c     Coriolis: (2/Ek) * (Omega x u), Omega = z_hat
+      ffx = buoy * rh_x + (2.0 / Ek) * uy
+      ffy = buoy * rh_y - (2.0 / Ek) * ux
+      ffz = buoy * rh_z
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userq(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      qvol = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userbc(ix,iy,iz,iside,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      real eta, ri, ro, rad
+
+      eta = uparam(3)
+      ri  = eta / (1.0 - eta)
+      ro  = 1.0 / (1.0 - eta)
+
+      ux   = 0.0
+      uy   = 0.0
+      uz   = 0.0
+
+      rad = sqrt(x**2 + y**2 + z**2)
+      if (rad .lt. 0.5*(ri + ro)) then
+         temp = 1.0
+      else
+         temp = 0.0
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine useric(ix,iy,iz,eg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+c     Initial condition: conductive profile + Y^mc_mc perturbation
+c     Critical wavenumber: mc ~ 0.32 * Ek^(-1/3) (Roberts 1968 asymptotic)
+c     Perturbation amplitude: 0.1 * Ek^(1/3) (scales with expected convective velocity)
+
+      real Ek, eta, ri, ro, rad, th, phi
+      real T_s, xr, frad, amp
+      integer mc
+
+      Ek  = uparam(1)
+      eta = uparam(3)
+      ri  = eta / (1.0 - eta)
+      ro  = 1.0 / (1.0 - eta)
+
+      rad = sqrt(x**2 + y**2 + z**2)
+      if (rad .lt. 1e-14) rad = 1e-14
+
+      th  = acos(z / rad)
+      phi = atan2(y, x)
+
+      ux = 0.0
+      uy = 0.0
+      uz = 0.0
+
+c     Critical azimuthal wavenumber and perturbation amplitude
+      mc  = nint(0.32 * Ek**(-1.0/3.0))
+      amp = 0.1 * Ek**(1.0/3.0)
+
+c     Radial envelope: peaks at midshell, zero at boundaries
+      xr   = 2.0 * rad - ri - ro
+      frad = (1.0 - xr**2)**3
+
+c     Conductive profile + Y^mc_mc perturbation
+      T_s  = ri * ro / rad - ri
+      temp = T_s + amp * frad * sin(th)**mc * cos(real(mc) * phi)
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userchk()
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer csvWrite
+      logical exists
+      real ekin_max
+      parameter (ekin_max = 1.0e20)
+
+      csvWrite = int(uparam(4))
+      if (csvWrite .le. 0) csvWrite = 10
+
+c     Blowup detection: check for NaN or extreme values
+      if (istep .gt. 0) then
+         n = lx1*ly1*lz1*nelv
+         uvel2 = glsc3(vx,vx,bm1,n)
+     $        + glsc3(vy,vy,bm1,n)
+     $        + glsc3(vz,vz,bm1,n)
+         if (uvel2 .ne. uvel2 .or. uvel2 .gt. ekin_max) then
+            if (nid .eq. 0) then
+               write(6,*) 'BLOWUP DETECTED at step', istep,
+     $                    ', time=', time
+               write(6,*) '  E_kin =', uvel2
+               write(6,*) 'Stopping gracefully.'
+            endif
+            call exitt
+         endif
+      endif
+
+c     Create CSV files with headers at step 0
+      if (istep .eq. 0) then
+         if (nid .eq. 0) then
+            inquire(file="reynolds.csv", exist=exists)
+            if (exists) then
+               open(unit=51, file="reynolds.csv",
+     &              status="replace", action="write")
+            else
+               open(unit=51, file="reynolds.csv",
+     &              status="new", action="write")
+            endif
+            write(51,*) "time, Re, Re_x, Re_y, Re_z"
+            close(51)
+
+            inquire(file="nusselt.csv", exist=exists)
+            if (exists) then
+               open(unit=52, file="nusselt.csv",
+     &              status="replace", action="write")
+            else
+               open(unit=52, file="nusselt.csv",
+     &              status="new", action="write")
+            endif
+            write(52,*) "time, Nu_in, Nu_out"
+            close(52)
+         endif
+      endif
+
+      if (mod(istep, csvWrite) .eq. 0) then
+         call getReynolds()
+         call getNusselt()
+      endif
+
+      call check_blowup()
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userqtl
+      call userqtl_scig
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat()
+      include 'SIZE'
+      include 'TOTAL'
+
+c     Preconditioner settings
+      param(42) = 1
+      param(43) = 1
+      param(44) = 1
+
+      if (nid .eq. 0) then
+         write(6,*) 'Hydro setup:'
+         write(6,*) '  Ra    = ', uparam(2)
+         write(6,*) '  Ek    = ', uparam(1)
+         write(6,*) '  eta   = ', uparam(3)
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat2()
+      include 'SIZE'
+      include 'TOTAL'
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3()
+      include 'SIZE'
+      include 'TOTAL'
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine getReynolds()
+      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      real uvel2, vvel2, wvel2, re
+      real re_x, re_y, re_z
+      integer n, io
+      real glsc3
+
+      n = lx1*ly1*lz1*nelv
+
+      uvel2 = glsc3(vx, vx, bm1, n)
+      vvel2 = glsc3(vy, vy, bm1, n)
+      wvel2 = glsc3(vz, vz, bm1, n)
+      re   = sqrt((uvel2 + vvel2 + wvel2) / volvm1) / param(2)
+      re_x = sqrt(uvel2 / volvm1) / param(2)
+      re_y = sqrt(vvel2 / volvm1) / param(2)
+      re_z = sqrt(wvel2 / volvm1) / param(2)
+
+      if (nid .eq. 0) then
+         open(unit=51, file="reynolds.csv", position="append",
+     &        status="old", action="write")
+         write(51,*) time, ",", re, ",", re_x, ",", re_y, ",", re_z
+         close(51)
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine getNusselt()
+      implicit none
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      real dTdx(lx1,ly1,lz1,lelt,1)
+      real dTdy(lx1,ly1,lz1,lelt,1)
+      real dTdz(lx1,ly1,lz1,lelt,1)
+      real dTdr(lx1,ly1,lz1,lelt)
+
+      real eta, ri, ro, rmid, rad
+      real dphi, dS
+      real tarea_in, tarea_out, area_in, area_out
+      real Nu_in, Nu_out, glsum
+      real rc
+
+      integer i, j, k, e, io, iside
+      integer ic, jc, kc
+      character*3 side
+
+      eta = uparam(3)
+      ri  = eta / (1.0 - eta)
+      ro  = 1.0 / (1.0 - eta)
+      rmid = 0.5 * (ri + ro)
+
+c     Compute temperature gradient
+      call gradm1(dTdx, dTdy, dTdz, t)
+
+c     Compute radial component dT/dr
+      do e = 1, nelt
+        do k = 1, lz1
+          do j = 1, ly1
+            do i = 1, lx1
+              rad = sqrt(xm1(i,j,k,e)**2 + ym1(i,j,k,e)**2
+     &                 + zm1(i,j,k,e)**2)
+              if (rad .lt. 1e-14) rad = 1e-14
+              dTdr(i,j,k,e) = (dTdx(i,j,k,e,1)*xm1(i,j,k,e)
+     &                       + dTdy(i,j,k,e,1)*ym1(i,j,k,e)
+     &                       + dTdz(i,j,k,e,1)*zm1(i,j,k,e)) / rad
+            enddo
+          enddo
+        enddo
+      enddo
+
+c     Surface integral of dT/dr on inner and outer boundaries
+      tarea_in  = 0.0
+      tarea_out = 0.0
+      area_in   = 0.0
+      area_out  = 0.0
+
+      do e = 1, nelt
+        do iside = 1, 6
+          side = cbc(iside, e, 2)
+          if (side .eq. 't  ') then
+c           Get a point on this face to determine inner vs outer
+            ic = (lx1+1)/2
+            jc = (ly1+1)/2
+            kc = (lz1+1)/2
+            if (iside .eq. 1) ic = 1
+            if (iside .eq. 2) ic = lx1
+            if (iside .eq. 3) jc = 1
+            if (iside .eq. 4) jc = ly1
+            if (iside .eq. 5) kc = 1
+            if (iside .eq. 6) kc = lz1
+            rc = sqrt(xm1(ic,jc,kc,e)**2 + ym1(ic,jc,kc,e)**2
+     &              + zm1(ic,jc,kc,e)**2)
+
+            call surface_int(dphi, dS, dTdr, e, iside)
+            if (rc .lt. rmid) then
+              tarea_in = tarea_in + dphi
+              area_in  = area_in  + dS
+            else
+              tarea_out = tarea_out + dphi
+              area_out  = area_out  + dS
+            endif
+          endif
+        enddo
+      enddo
+
+c     Nusselt: normalize by conductive gradient
+c     Conductive: T_s = ri*ro/r - ri, dT_s/dr = -ri*ro/r^2
+c     At ri: dT_cond/dr = -ro/ri
+c     At ro: dT_cond/dr = -ri/ro
+      Nu_in  = glsum(tarea_in,1)  / glsum(area_in,1)  / (-ro/ri)
+      Nu_out = glsum(tarea_out,1) / glsum(area_out,1) / (-ri/ro)
+
+      if (nid .eq. 0) then
+         open(unit=52, file="nusselt.csv", position="append",
+     &        status="old", action="write")
+         write(52,*) time, ",", Nu_in, ",", Nu_out
+         close(52)
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine check_blowup()
+c
+c     Stop the run if Re exceeds a blowup threshold.
+c     Called every step from userchk. Uses Re > 1e4 as threshold;
+c     NaN is caught via the IEEE property x /= x.
+c
+      implicit none
+      include 'SIZE'
+      include 'TOTAL'
+
+      real re, glsc3
+      integer n
+
+      n = lx1*ly1*lz1*nelv
+      re = sqrt((glsc3(vx,vx,bm1,n) + glsc3(vy,vy,bm1,n)
+     $          +glsc3(vz,vz,bm1,n)) / volvm1) / param(2)
+
+      if (re .gt. 1.e4 .or. re .ne. re) then
+         if (nid .eq. 0) write(6,*)
+     $        'BLOWUP: Re = ', re, ' -- calling nek_end'
+         call nek_end()
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+c-----------------------------------------------------------------------
+c  Stub: bcrobin_mhd is called from induct.f but unused in hydro runs
+      subroutine bcrobin_mhd(h2)
+      return
+      end

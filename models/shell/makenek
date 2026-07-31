@@ -1,0 +1,10 @@
+#!/bin/bash
+# Set NEK_SOURCE_ROOT to your Nek5000 installation
+: ${NEK_SOURCE_ROOT:?"Set NEK_SOURCE_ROOT to your Nek5000 directory"}
+CASE=shell
+export FC=${FC:-mpif90}
+export CC=${CC:-mpicc}
+export FFLAGS="${FFLAGS:--O2}"
+export CFLAGS="${CFLAGS:--O2}"
+${NEK_SOURCE_ROOT}/bin/nekconfig $CASE
+make -j4
